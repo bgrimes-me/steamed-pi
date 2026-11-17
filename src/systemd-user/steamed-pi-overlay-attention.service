@@ -1,0 +1,11 @@
+[Unit]
+Description=Show the console menu at login if something needs attention (no network, new PIN, first run)
+After=graphical-session.target steamed-pi-dashboard.service
+PartOf=graphical-session.target
+[Service]
+Type=oneshot
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStartPre=/bin/sleep 25
+ExecStart=%h/.local/bin/steamed-pi-overlay --attention
+[Install]
+WantedBy=graphical-session.target

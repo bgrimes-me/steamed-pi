@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Console Mode
+Comment=Steam Big Picture on a minimal compositor (game console)
+Exec=@HOME@/.local/bin/steamed-pi-console-session
+Type=Application
+DesktopNames=labwc;wlroots

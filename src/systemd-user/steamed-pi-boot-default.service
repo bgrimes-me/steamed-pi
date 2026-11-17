@@ -1,0 +1,8 @@
+[Unit]
+Description=Re-apply the boot default (console/desktop) so a one-off mode switch is forgotten at the next reboot
+After=graphical-session.target
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/steamed-pi-session-switch --reset-default
+[Install]
+WantedBy=graphical-session.target

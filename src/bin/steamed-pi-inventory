@@ -1,0 +1,7 @@
+#!/bin/bash
+# What is running right now? (run it in console mode over SSH to see exactly what the console costs)
+echo "== memory"; free -m | sed -n 2,3p
+echo "== running system services ($(systemctl list-units --type=service --state=running --no-legend | wc -l))"; systemctl list-units --type=service --state=running --no-legend | awk '{print "  "$1}'
+echo "== running user services ($(systemctl --user list-units --type=service --state=running --no-legend | wc -l))"; systemctl --user list-units --type=service --state=running --no-legend | awk '{print "  "$1}'
+echo "== top 15 by memory (MB)"; ps -eo rss,comm --sort=-rss | head -16 | awk 'NR>1{printf "  %5.0f  %s\n",$1/1024,$2}'
+echo "== session"; pgrep -x labwc >/dev/null && echo "  console mode (labwc)"; pgrep -x gnome-shell >/dev/null && echo "  desktop mode (GNOME)"

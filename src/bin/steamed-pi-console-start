@@ -1,0 +1,54 @@
+#!/bin/bash
+# Runs once inside the console session (labwc startup command). Log: ~/.cache/steamed-pi/session.log
+mkdir -p ~/.cache/steamed-pi; exec >>~/.cache/steamed-pi/session.log 2>&1
+echo "=== $(date) console session start (WAYLAND_DISPLAY=$WAYLAND_DISPLAY DISPLAY=$DISPLAY)"
+VARS="WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP"
+# (test mode never touches the shared user environment)
+if [ -z "$STEAMED_PI_CONSOLE_TEST" ]; then
+  systemctl --user import-environment $VARS
+  dbus-update-activation-environment --systemd $VARS 2>/dev/null
+  # portals left over from a GNOME session would keep answering with the wrong desktop; they respawn on demand
+  systemctl --user stop xdg-desktop-portal.service xdg-desktop-portal-gtk.service xdg-desktop-portal-gnome.service 2>/dev/null
+  # GNOME helpers that outlive a GNOME session (the user manager lingers) and have no job in console mode; they come back
+  # by themselves when the desktop starts. Steam, the overlay, emulators and ES-DE need none of them.
+  systemctl --user stop --no-block 'evolution-*' 'gvfs-*-volume-monitor.service' 'gvfs-metadata.service' gnome-terminal-server.service \
+    snap.snapd-desktop-integration.snapd-desktop-integration.service gcr-ssh-agent.service 'gnome-session-*' 'dbus-:*org.gnome.*' \
+    'dbus-:*org.freedesktop.portal.IBus*' filter-chain.service 2>/dev/null
+fi
+
+# screen mode: the "Gaming Mode screen" setting (default 720p @ 60 Hz keeps the Pi's GPU load low)
+python3 -I -c "
+import sys, os; sys.path.insert(0, os.path.expanduser('~/.local/lib/steamed-pi'))
+import steamed_pi_settings as S; v = S.get_display(); ok, msg = S.apply_display(v); print('screen (%s):' % v, msg)
+"
+
+# our always-on helpers (dashboard is a lingering user service and is already running)
+if [ -z "$STEAMED_PI_CONSOLE_TEST" ]; then
+  systemctl --user restart steamed-pi-controller-home.service
+  systemctl --user start --no-block steamed-pi-overlay-attention.service
+fi
+export DISPLAY=${DISPLAY:-:0}
+[ -n "$STEAMED_PI_CONSOLE_TEST" ] && { echo "test mode: skipping Steam"; /usr/bin/labwc --exit; exit 0; }
+
+# forget one-off mode switches: the boot default (if chosen) applies again
+"$HOME/.local/bin/steamed-pi-session-switch" --reset-default
+
+# keep our logo as Steam's boot "spinner" image (a Steam update can restore Steam's own animation)
+SPIN=~/.local/share/steamed-pi/art/boot-spinner.png; IMG=~/.local/share/Steam/steamui/images
+if [ -f "$SPIN" ] && [ -d "$IMG" ] && ! cmp -s "$SPIN" "$IMG/deck_boot_transition.png"; then
+  [ -f "$IMG/deck_boot_transition.png.orig" ] || cp -p "$IMG/deck_boot_transition.png" "$IMG/deck_boot_transition.png.orig"
+  cp "$SPIN" "$IMG/deck_boot_transition.png" && echo "boot image re-applied"
+fi
+
+# window logger (debug aid, only while ~/.cache/steamed-pi/debug-windows exists): records every window Steam creates
+[ -f ~/.cache/steamed-pi/debug-windows ] && setsid python3 -I "$HOME/.local/bin/steamed-pi-window-log" >/dev/null 2>&1 &
+
+# start Steam and keep it running (like a Steam Deck, closing Steam just restarts it). If it keeps failing, the supervisor
+# leaves a notice and switches to the desktop so there is always a usable screen. steamed-pi-restart-steam drops a flag file
+# during deliberate restarts so they are not counted as failures.
+rm -f ~/.cache/steamed-pi/restarting
+# one-time setup that needs a Steam account: default Proton, the Emulation shortcut, ARM compatibility tools (waits for your sign-in)
+[ -x "$HOME/.local/bin/steamed-pi-postlogin" ] && setsid "$HOME/.local/bin/steamed-pi-postlogin" --auto >/dev/null 2>&1 &
+"$HOME/.local/bin/steamed-pi-steam-supervisor"
+echo "supervisor ended -> closing the console session"
+/usr/bin/labwc --exit

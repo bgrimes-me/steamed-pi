@@ -1,0 +1,35 @@
+#!/bin/bash
+# GDM session "Console Mode": a minimal Wayland compositor (labwc) running only Steam Big Picture.
+# Chosen from the gear icon on the login screen. GNOME ("Ubuntu") stays installed and is the desktop mode.
+export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=labwc XDG_SESSION_DESKTOP=labwc
+mkdir -p ~/.cache/steamed-pi; LOG=~/.cache/steamed-pi/session.log
+
+# On the Pi 5 the display controller (vc4, card1) cannot render; the 3D GPU is v3d (renderD128). Without this, labwc
+# falls back to CPU rendering (and so does Xwayland): ~7 fps. So name the render node explicitly...
+R=""
+for n in /dev/dri/renderD*; do
+  d=$(basename "$n"); drv=$(basename "$(readlink -f /sys/class/drm/$d/device/driver 2>/dev/null)")
+  [ "$drv" = v3d ] && R=$n
+done
+[ -z "$R" ] && R=$(ls /dev/dri/renderD* 2>/dev/null | head -1)
+# ...and wait until logind has granted this session access to it (it is applied a moment after login)
+for i in $(seq 1 60); do [ -r "$R" ] && [ -w "$R" ] && break; sleep 0.2; done
+if [ -r "$R" ] && [ -w "$R" ]; then export WLR_RENDER_DRM_DEVICE=$R; echo "$(date +%T) render device: $R (access ok after $i tries)" >> "$LOG"
+else echo "$(date +%T) WARNING: no access to render node '$R' - compositor will use software rendering" >> "$LOG"; fi
+
+# Tell GDM this session is up (GNOME Shell does this itself; labwc does not). Without it GDM can decide the autologin
+# session never started and put the login screen on top of it (seen once: login screen + black screen at boot).
+( for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1
+    busctl --system call org.gnome.DisplayManager /org/gnome/DisplayManager/Manager org.gnome.DisplayManager.Manager RegisterSession >/dev/null 2>&1 && break
+  done; echo "$(date +%T) registered with GDM (try $i)" >> "$LOG" ) &
+
+# GDM sometimes puts its login screen (tty1) in front of this session when plymouth quits. For the first minute, if this
+# session is not the active one, bring it back to the front (and log it, so we can see how often this happens).
+( SID=$(loginctl show-session "$XDG_SESSION_ID" -p Id --value 2>/dev/null)
+  for i in $(seq 1 90); do sleep 1
+    [ "$(loginctl show-session "$SID" -p Active --value 2>/dev/null)" = yes ] && continue
+    echo "$(date +%T) console session $SID is not in front (VT $(cat /sys/class/tty/tty0/active)); activating it" >> "$LOG"
+    loginctl activate "$SID" >> "$LOG" 2>&1
+  done ) &
+
+exec /usr/bin/labwc -C "$HOME/.config/steamed-pi/labwc" -s "$HOME/.local/bin/steamed-pi-console-start"

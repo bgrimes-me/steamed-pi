@@ -1,0 +1,27 @@
+#!/bin/bash
+# Switch between Console Mode (labwc + Steam Big Picture) and Desktop Mode (GNOME), Steam-Deck style.
+#   steamed-pi-session-switch console|desktop     switch now: ends the current session (Steam/games/apps close) and
+#                                            auto-logs-in to the other one
+#   steamed-pi-session-switch boot console|desktop   choose what the machine boots into (persistent default)
+#   steamed-pi-session-switch --reset-default     (run at each session start) re-apply the boot default, so a one-off
+#                                            switch to the other mode is forgotten at the next reboot
+#   STEAMED_PI_SWITCH_DRY=1 ...                   print what would happen, change nothing
+#   STEAMED_PI_NO_ACCOUNT=1 ...                   (tests) never touch the login-session setting
+set -u
+CFG=$HOME/.config/steamed-pi; BM=$CFG/boot-mode; U=/org/freedesktop/Accounts/User$(id -u)
+run() { if [ -n "${STEAMED_PI_SWITCH_DRY:-}" ]; then echo "(dry) $*"; else "$@"; fi; }
+session_for() { case "$1" in console) echo steamed-pi-console;; desktop) echo ubuntu;; *) return 1;; esac; }
+setsession() { [ -n "${STEAMED_PI_NO_ACCOUNT:-}" ] && return 0; run busctl call org.freedesktop.Accounts "$U" org.freedesktop.Accounts.User SetSession s "$1" >/dev/null; }
+case "${1:-}" in
+  console|desktop)
+    s=$(session_for "$1"); echo "switching to $1 mode (session: $s)"
+    setsession "$s" || { echo "could not set the login session"; exit 1; }
+    run sudo -n /usr/bin/systemctl --no-block restart gdm ;;
+  boot)
+    s=$(session_for "${2:-}") || { echo "usage: $0 boot console|desktop"; exit 2; }
+    mkdir -p "$CFG"; [ -n "${STEAMED_PI_SWITCH_DRY:-}" ] || echo "$2" > "$BM"; setsession "$s"; echo "boot default: $2" ;;
+  --reset-default)
+    [ -f "$BM" ] || exit 0                                  # no boot default chosen yet: leave things as they are
+    s=$(session_for "$(cat "$BM")") || exit 0; setsession "$s" ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
+esac

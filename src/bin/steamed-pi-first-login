@@ -1,0 +1,7 @@
+#!/bin/bash
+# Runs once, at the first desktop login after install: applies the Steamed Pi desktop look, then removes its own autostart entry.
+STATE="$HOME/.local/state/steamed-pi"; mkdir -p "$STATE"
+if [ ! -f "$STATE/theme-done" ] && [ -x "$HOME/.local/share/steamed-pi/theme/steamed-pi-theme.sh" ]; then
+  bash "$HOME/.local/share/steamed-pi/theme/steamed-pi-theme.sh" apply && touch "$STATE/theme-done"
+fi
+rm -f "$HOME/.config/autostart/steamed-pi-first-login.desktop"

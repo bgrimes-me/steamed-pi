@@ -1,0 +1,9 @@
+[Unit]
+Description=Give the GNOME session fresh desktop portals (they may linger from console mode with the wrong desktop name)
+After=graphical-session.target
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 6
+ExecStart=/usr/bin/systemctl --user restart xdg-desktop-portal.service
+[Install]
+WantedBy=graphical-session.target

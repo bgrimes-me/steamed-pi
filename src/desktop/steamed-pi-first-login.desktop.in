@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Steamed Pi first-login setup
+Exec=@HOME@/.local/bin/steamed-pi-first-login
+X-GNOME-Autostart-enabled=true

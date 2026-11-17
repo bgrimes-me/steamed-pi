@@ -1,0 +1,10 @@
+#!/bin/bash
+# Launch ES-DE (emulator front-end) under Steam on the Pi 5.
+# - ES-DE needs an OpenGL 3.3 context; the Pi's GPU driver exposes 3.1, so advertise 3.3 to ES-DE only.
+#   (The retroarch / dolphin-emu wrappers in ~/.local/bin remove this override for the emulators.)
+# - PATH includes ~/.local/bin (wrappers) and /usr/games (Dolphin) because Steam's environment is minimal.
+export PATH="$HOME/.local/bin:/usr/games:/usr/local/bin:/usr/bin:/bin:$PATH"
+export MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330
+# Keep every emulator on X11 so its window can be found/switched/closed by the Home-button service.
+export SDL_VIDEODRIVER=x11 QT_QPA_PLATFORM=xcb GDK_BACKEND=x11
+exec "$HOME/Applications/ES-DE/squashfs-root/AppRun" --no-splash --no-update-check "$@"

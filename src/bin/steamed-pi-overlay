@@ -1,0 +1,345 @@
+#!/usr/bin/python3 -I
+"""Console menu overlay: pauses the running game, takes over the controller, and offers Resume / Steam / Close game /
+Console info / Restart / Reboot / Power off. Also shows the dashboard address and PIN.
+  steamed-pi-overlay                normal (opened by the Home button)
+  steamed-pi-overlay --attention    only opens if something needs attention (no network, new PIN, first run)
+  options for testing: --test-pid PID (pretend this process is the game)  --no-grab  --dry (don't run actions)"""
+import sys, os, time, json, signal, struct, subprocess, urllib.request, argparse
+LS_LIB = next((f for f in ('/usr/lib/aarch64-linux-gnu/libgtk4-layer-shell.so.0', '/usr/lib/aarch64-linux-gnu/libgtk4-layer-shell.so') if os.path.exists(f)), None)
+if LS_LIB and LS_LIB not in os.environ.get('LD_PRELOAD', '') and not os.environ.get('STEAMED_PI_NO_LS'):
+    # gtk4-layer-shell must be loaded before libwayland-client (documented requirement for Python)
+    os.execve('/usr/bin/python3', ['/usr/bin/python3', '-I', os.path.abspath(__file__)] + sys.argv[1:], dict(os.environ, LD_PRELOAD=LS_LIB))
+sys.path.insert(0, os.path.expanduser('~/.local/lib/steamed-pi'))
+import steamed_pi_common as rc
+import steamed_pi_palette as pal
+import steamed_pi_settings as RS
+import gi
+gi.require_version('Gtk', '4.0'); gi.require_version('Gdk', '4.0')
+from gi.repository import Gtk, Gdk, GLib, Pango
+try:
+    gi.require_version('GLibUnix', '2.0'); from gi.repository import GLibUnix
+except (ValueError, ImportError): GLibUnix = None
+try:
+    gi.require_version('Gtk4LayerShell', '1.0'); from gi.repository import Gtk4LayerShell as LS
+except (ValueError, ImportError): LS = None
+
+ap = argparse.ArgumentParser(); ap.add_argument('--attention', action='store_true'); ap.add_argument('--test-pid', type=int)
+ap.add_argument('--no-grab', action='store_true'); ap.add_argument('--dry', action='store_true'); ap.add_argument('--timeout', type=int, default=90)
+ap.add_argument('--page', default=None, help='dev aid: open this page (settings, info)')
+ap.add_argument('--snapshot', help='dev aid: save the menu as a PNG at this path, then quit')
+ARGS = ap.parse_args()
+CFGD = os.path.expanduser('~/.config/steamed-pi/dashboard'); PINF = os.path.join(CFGD, 'pin'); ACK = os.path.join(CFGD, 'ack.json')
+PIDF = os.path.join(rc.CACHE, 'overlay.pid'); LOG = os.path.join(rc.CACHE, 'overlay.log')
+NOTICE = os.path.expanduser('~/.cache/steamed-pi/notice')
+def log(*a):
+    line = time.strftime('%H:%M:%S ') + ' '.join(str(x) for x in a)
+    print(line, flush=True)
+    try: open(LOG, 'a').write(line + '\n')
+    except OSError: pass
+
+# ------------------------------------------------------------------ single instance
+def other_instance():
+    try: pid = int(open(PIDF).read())
+    except (OSError, ValueError): return None
+    if pid != os.getpid() and os.path.exists('/proc/%d' % pid) and 'steamed-pi-overlay' in open('/proc/%d/cmdline' % pid).read(): return pid
+    return None
+old = other_instance()
+if old: log('already open (pid %d) -> asking it to close' % old); os.kill(old, signal.SIGTERM); sys.exit(0)
+open(PIDF, 'w').write(str(os.getpid()))
+
+# ------------------------------------------------------------------ data
+def fetch_status():
+    try: return json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/status', timeout=2))
+    except Exception: return None
+def read_pin():
+    try: return open(PINF).read().strip() or None
+    except OSError: return None
+def load_ack():
+    try: return json.load(open(ACK))
+    except (OSError, ValueError): return {}
+def attention_reasons(st):
+    r = []
+    try: note = open(NOTICE).read().strip()
+    except OSError: note = ''
+    if note: r.append(('notice', note))
+    ips = st['ips'] if st else []
+    if not ips: r.append(('net', 'No network connection. Open Steam and go to Settings > Internet to join a Wi-Fi network.'))
+    if RS.get_popups() == 'quiet': return r                  # "Start-up notices: problems only"
+    ack = load_ack()
+    if not ack.get('seen'): r.append(('first', 'Welcome! This is your console’s address book. Keep it handy.'))
+    pin = read_pin()
+    if pin and ack.get('pin') != pin: r.append(('pin', 'The dashboard PIN changed since you last looked.'))
+    return r
+
+# ------------------------------------------------------------------ UI
+def _rgba(h, a):
+    h = h.lstrip('#'); return 'rgba(%d,%d,%d,%s)' % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), a)
+def build_css():
+    c = pal.load()
+    return ("""
+window.ov { background-color: %(bg)s; color: %(text)s; }
+.title { font-size: 30px; font-weight: 800; color: %(accent)s; }
+.sub { font-size: 18px; color: %(muted)s; }
+.bar { font-size: 18px; color: %(tan)s; background-color: %(accent08)s; border: 1px solid %(line)s; border-radius: 12px; padding: 12px 18px; }
+.hint { font-size: 16px; color: %(muted)s; }
+.warn { font-size: 20px; color: %(accent)s; }
+button.big { font-size: 21px; font-weight: 700; min-height: 48px; min-width: 460px; border-radius: 14px; padding: 0 22px;
+             background-image: none; background-color: %(card)s; color: %(text)s; border: 3px solid %(line)s; }
+button.big:focus, button.big:hover { border-color: %(accent)s; background-color: %(focus)s; }
+button.big:disabled { opacity: 0.4; }
+button.row { min-width: 820px; min-height: 40px; font-size: 19px; }
+.rowval { color: %(accent)s; font-weight: 800; }
+.msg { font-size: 18px; color: %(tan)s; }
+button.danger:focus { border-color: %(bad)s; background-color: %(bad15)s; }
+.info { font-size: 22px; }
+""" % dict(bg=_rgba(c['BG_DESKTOP'], 0.96), text=c['TEXT'], accent=c['ACCENT'], muted=c['MUTED'], tan=c['TAN'], line=c['LINE'],
+           card=c['CARD'], focus=c['FOCUS_BG'], bad=c['BAD'], accent08=_rgba(c['ACCENT'], 0.08), bad15=_rgba(c['BAD'], 0.15))).encode()
+CSS = build_css()
+class Overlay(Gtk.ApplicationWindow):
+    def __init__(self, app, game, stopped, mode):
+        super().__init__(application=app); self.add_css_class('ov'); self.game, self.stopped, self.mode = game, stopped, mode
+        self.closing = False; self.pending = None; self.last_input = time.time(); self.debounce = {}
+        self.stack = Gtk.Stack(); self.set_child(self.stack)
+        self.st = fetch_status(); self.page_main(); self.page_info(); self.page_settings(); self.page_confirm()
+        k = Gtk.EventControllerKey(); k.connect('key-pressed', self.on_key); self.add_controller(k)
+        try: ls_ok = bool(LS and LS.is_supported())
+        except Exception as e: ls_ok = False; log('layer-shell unavailable:', str(e)[:80])    # never crash: fall back to a fullscreen window
+        if ls_ok:
+            LS.init_for_window(self); LS.set_layer(self, LS.Layer.OVERLAY); LS.set_namespace(self, 'steamed-pi-overlay')
+            for edge in (LS.Edge.TOP, LS.Edge.BOTTOM, LS.Edge.LEFT, LS.Edge.RIGHT): LS.set_anchor(self, edge, True)
+            LS.set_exclusive_zone(self, -1); LS.set_keyboard_mode(self, LS.KeyboardMode.EXCLUSIVE); log('layer-shell overlay')
+        else: self.fullscreen(); log('fullscreen window (no layer-shell)')
+        GLib.timeout_add_seconds(2, self.tick)
+    # -- helpers
+    def box(self, spacing=9): b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=spacing); b.set_halign(Gtk.Align.CENTER); b.set_valign(Gtk.Align.CENTER); return b
+    def label(self, text, cls=None, wrap=False):
+        l = Gtk.Label(label=text); l.set_wrap(wrap); l.set_justify(Gtk.Justification.CENTER)
+        if wrap: l.set_max_width_chars(58); l.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        if cls: l.add_css_class(cls)
+        return l
+    def button(self, text, cb, danger=False, enabled=True):
+        b = Gtk.Button(label=text); b.add_css_class('big'); b.set_sensitive(enabled)
+        if danger: b.add_css_class('danger')
+        b.connect('clicked', lambda _b: (log('activate:', text), cb())); return b
+    def addr_line(self):
+        st = self.st; ips = st['ips'] if st else []
+        host = ips[0]['ip'] if ips else None; pin = read_pin()
+        a = ('Dashboard  http://%s:8080' % host) if host else 'No network'
+        return a + ('     PIN  %s' % pin if pin else '')
+    # -- pages
+    def page_main(self):
+        b = self.box(); b.append(self.label('Console menu', 'title'))
+        b.append(self.label(('Paused: %s' % self.game[2]) if self.game else 'Nothing is running', 'sub'))
+        self.bar = self.label(self.addr_line(), 'bar'); b.append(self.bar)
+        self.main_buttons = []
+        def add(text, cb, **kw): btn = self.button(text, cb, **kw); b.append(btn); self.main_buttons.append(btn); return btn
+        if self.game: self.first = add('Resume game', lambda: self.finish('resume'))
+        self.first = self.main_buttons[0] if self.main_buttons else None
+        add('Steam', lambda: self.finish('steam'))
+        if not self.first: self.first = self.main_buttons[0]
+        add('Console info', lambda: self.show('info'))
+        add('Settings', lambda: self.show('settings'))
+        if self.game: add('Close game', lambda: self.ask('Close the game?', 'close_game'), danger=True)
+        if rc.session_mode() == 'console': add('Switch to Desktop', lambda: self.ask('Switch to the desktop? Steam and any running game will close.', 'switch_desktop'))
+        else: add('Switch to Gaming Mode', lambda: self.ask('Switch to gaming mode? Open desktop apps will close.', 'switch_console'))
+        add('Restart Steam', lambda: self.ask('Restart Steam?', 'restart_steam'))
+        add('Reboot', lambda: self.ask('Reboot the console?', 'reboot'), danger=True)
+        add('Power off', lambda: self.ask('Power the console off?', 'poweroff'), danger=True)
+        b.append(self.label('A select    B back    Home resume', 'hint'))
+        sw = Gtk.ScrolledWindow(); sw.set_child(b); sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC); self.stack.add_named(sw, 'main')
+    def page_info(self):
+        b = self.box(18); b.append(self.label('Console info', 'title')); self.info_lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8); b.append(self.info_lines)
+        self.reason_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8); b.append(self.reason_box)
+        self.info_back = self.button('Back', lambda: self.on_info_back()); b.append(self.info_back); self.stack.add_named(b, 'info'); self.fill_info()
+    def fill_info(self):
+        for box in (self.info_lines, self.reason_box):
+            while (c := box.get_first_child()): box.remove(c)
+        st = self.st; add = lambda t, c='info': self.info_lines.append(self.label(t, c, wrap=True))
+        if not st: add('Dashboard is not responding.'); return
+        pin = read_pin()
+        for i in st['ips']: add('%s (%s):   http://%s:8080' % ('Ethernet' if i['kind'] == 'wired' else 'Wi-Fi' if i['kind'] == 'wifi' else i['if'], i['if'], i['ip']))
+        add('Name:   http://%s.local:8080' % st['host'])
+        add('Dashboard PIN:   %s' % (pin if pin else 'not set'))
+        add('SSH:  %s    FTP:  %s' % ('ON' if st['ssh']['on'] else 'off', 'ON' if st['ftp']['on'] else 'off'))
+        if st['ftp']['on']: add('FTP login:  %s  /  %s' % (st['ftp']['user'], st['ftp']['password']))
+        add('Memory:  %d / %d MB    Temp: %s °C' % (st['mem']['used'], st['mem']['total'], st['temp']))
+    def page_settings(self):
+        b = self.box(7); b.append(self.label('Settings', 'title'))
+        self.rows = {}; self.set_first = None
+        for s in RS.SETTINGS:
+            btn = Gtk.Button(); btn.add_css_class('big'); btn.add_css_class('row')
+            hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24); l = Gtk.Label(label=s.label); l.set_hexpand(True); l.set_xalign(0)
+            v = Gtk.Label(label=''); v.add_css_class('rowval'); v.set_xalign(1); hb.append(l); hb.append(v); btn.set_child(hb)
+            btn.connect('clicked', lambda _b, s=s: self.change(s))
+            fc = Gtk.EventControllerFocus(); fc.connect('enter', lambda _c, s=s: self.setting_hint.set_label(s.hint)); btn.add_controller(fc)
+            b.append(btn); self.rows[s.key] = v
+            if not self.set_first: self.set_first = btn
+        self.setting_hint = self.label('', 'hint', wrap=True); self.setting_hint.set_size_request(760, -1); b.append(self.setting_hint)
+        self.setting_msg = self.label('', 'msg', wrap=True); b.append(self.setting_msg)
+        b.append(self.label('A change    B back', 'hint'))
+        sw = Gtk.ScrolledWindow(); sw.set_child(b); sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC); self.stack.add_named(sw, 'settings')
+        self.refresh_settings()
+    def refresh_settings(self):
+        for s in RS.SETTINGS:
+            try: v = s.get()
+            except Exception as e: v = '?'; log('setting read failed:', s.key, e)
+            self.rows[s.key].set_label('' if not s.options else s.shown(v) if s.key != 'pin' else v)
+            if s.key == 'pin': self.rows[s.key].set_label(v)
+    def change(self, s):
+        self.last_input = time.time()
+        if ARGS.dry: log('(dry) change setting:', s.key); return
+        try:
+            cur = s.get(); new = s.next_value(cur) if s.options else None
+            log('setting:', s.key, cur, '->', new); ok, msg = s.set(new)
+        except Exception as e: ok, msg = False, 'Could not change that (%s)' % str(e)[:60]
+        self.setting_msg.set_label(('' if ok else 'Problem: ') + msg); self.refresh_settings()
+    def page_confirm(self):
+        b = self.box(18); self.confirm_label = self.label('', 'title'); b.append(self.confirm_label)
+        self.btn_yes = self.button('Yes', lambda: self.finish(self.pending)); self.btn_no = self.button('No, go back', lambda: self.show('main'))
+        b.append(self.btn_no); b.append(self.btn_yes); self.stack.add_named(b, 'confirm')
+    def show(self, name):
+        self.stack.set_visible_child_name(name); self.page = name
+        target = {'main': self.first, 'info': self.info_back, 'confirm': self.btn_no, 'settings': self.set_first}[name]
+        if name == 'settings': self.setting_msg.set_label(''); self.refresh_settings(); self.setting_hint.set_label(RS.SETTINGS[0].hint)
+        if name == 'info': self.st = fetch_status() or self.st; self.fill_info(); self.bar.set_label(self.addr_line())
+        GLib.idle_add(lambda: target.grab_focus() and False)
+    def ask(self, text, action): self.pending = action; self.confirm_label.set_label(text); self.show('confirm')
+    def on_info_back(self):
+        if self.mode == 'attention': self.finish('dismiss')
+        else: self.show('main')
+    # -- input
+    def nav(self, direction):
+        self.last_input = time.time(); self.child_focus(direction)
+        f = self.get_focus(); log('focus:', f.get_label() if isinstance(f, Gtk.Button) else f)
+    def press_a(self):
+        self.last_input = time.time(); f = self.get_focus()
+        if isinstance(f, Gtk.Button): f.emit('clicked')
+    def press_b(self):
+        self.last_input = time.time()
+        if self.stack.get_visible_child_name() == 'main': self.finish('resume')
+        else: self.on_info_back() if self.stack.get_visible_child_name() == 'info' else self.show('main')
+    def on_key(self, _c, keyval, _kc, _st):
+        if keyval == Gdk.KEY_Escape: self.press_b(); return True
+        self.last_input = time.time(); return False
+    def pad_event(self, action):
+        now = time.time()
+        if now - self.debounce.get(action, 0) < 0.18: return          # physical + virtual pad both report; ignore the echo
+        self.debounce[action] = now
+        log('pad:', action)
+        if action == 'up': self.nav(Gtk.DirectionType.UP)
+        elif action == 'down': self.nav(Gtk.DirectionType.DOWN)
+        elif action == 'a': self.press_a()
+        elif action == 'b': self.press_b()
+        elif action == 'home': self.finish('resume' if self.mode != 'attention' else 'dismiss')
+    def tick(self):
+        if not self.closing and time.time() - self.last_input > ARGS.timeout:
+            log('idle timeout -> resume'); self.finish('resume' if self.mode != 'attention' else 'dismiss'); return False
+        return not self.closing
+    # -- finish
+    def finish(self, action):
+        if self.closing: return
+        self.closing = True; log('finish:', action); self.app_ref.result = action; self.app_ref.quit()
+
+class App(Gtk.Application):
+    def __init__(self, game, stopped, mode):
+        super().__init__(application_id=None, flags=Gio_FLAGS); self.game, self.stopped, self.mode, self.result, self.fds = game, stopped, mode, 'resume', []
+    def do_activate(self):
+        w = Overlay(self, self.game, self.stopped, self.mode); w.app_ref = self; self.win = w
+        css = Gtk.CssProvider(); css.load_from_data(CSS); Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        w.present(); w.show('info' if self.mode == 'attention' else (ARGS.page or 'main'))
+        if ARGS.snapshot: GLib.timeout_add(1200, lambda: (self.take_snapshot(w, ARGS.snapshot), self.quit(), False)[2])
+        if self.mode == 'attention':
+            for code, text in self.reasons: w.reason_box.append(w.label('• ' + text, 'warn', wrap=True))
+            w.info_back.set_label('OK, dismiss')
+        self.paths = {}                      # fd -> device path of every controller we are listening to
+        self.scan_pads(); GLib.timeout_add_seconds(2, self.scan_pads)     # controllers plugged in / connected later are picked up too
+        self.state = {}
+    def take_snapshot(self, w, path):
+        try:
+            width, height = w.get_width(), w.get_height(); pa = Gtk.WidgetPaintable.new(w); sn = Gtk.Snapshot(); pa.snapshot(sn, width, height)
+            node = sn.to_node(); tex = w.get_native().get_renderer().render_texture(node, None); tex.save_to_png(path); log('snapshot saved', path, width, height)
+        except Exception as e: log('snapshot failed:', e)
+    def scan_pads(self):
+        if self.win.closing: return False
+        known = set(self.paths.values())
+        for fd, path, name in rc.open_pads():
+            if path in known: os.close(fd); continue
+            ok = (not ARGS.no_grab) and rc.grab(fd, True); log('pad:', path, name, 'grabbed' if ok else 'not grabbed')
+            self.fds.append(fd); self.paths[fd] = path
+            (GLibUnix.fd_add_full if GLibUnix else GLib.unix_fd_add_full)(GLib.PRIORITY_DEFAULT, fd, GLib.IOCondition.IN, self.on_pad, fd)
+        return True
+    def on_pad(self, fd, cond, _user=None):
+        try: data = os.read(fd, rc.EVENT_SIZE * 32)
+        except OSError:
+            log('pad gone:', self.paths.pop(fd, '?')); return False
+        for i in range(0, len(data) - rc.EVENT_SIZE + 1, rc.EVENT_SIZE):
+            _s, _u, t, c, v = struct.unpack(rc.EVENT_FMT, data[i:i + rc.EVENT_SIZE])
+            if t == rc.EV_KEY and v == 1:
+                if c == rc.BTN_SOUTH: self.win.pad_event('a')
+                elif c == rc.BTN_EAST: self.win.pad_event('b')
+                elif c == rc.BTN_MODE: self.win.pad_event('home')
+            elif t == rc.EV_ABS:
+                if c == rc.ABS_HAT0Y and v: self.win.pad_event('up' if v < 0 else 'down')
+                elif c == rc.ABS_Y:
+                    prev = self.state.get((fd, 'y'), 0); cur = -1 if v < -16000 else 1 if v > 16000 else 0
+                    self.state[(fd, 'y')] = cur
+                    if cur and cur != prev: self.win.pad_event('up' if cur < 0 else 'down')
+        return True
+
+from gi.repository import Gio
+Gio_FLAGS = Gio.ApplicationFlags.NON_UNIQUE
+
+def cleanup():
+    n = len(rc.resume_stopped())
+    if n: log('resumed %d paused process(es)' % n)
+    try: os.remove(PIDF)
+    except OSError: pass
+
+def run_action(action, game):
+    if ARGS.dry: log('(dry) action:', action); return
+    try:
+        if action == 'resume' and game: time.sleep(0.15); rc.x_activate(game[0])
+        elif action == 'steam':
+            w = rc.find_steam_window()
+            if w: rc.x_activate(w[0])
+        elif action == 'close_game' and game:
+            pid = rc.window_pid(game[0]); log('closing pid', pid, rc.comm_of(pid) if pid else None); rc.close_process(pid)
+        elif action in ('switch_desktop', 'switch_console'):
+            subprocess.Popen([os.path.expanduser('~/.local/bin/steamed-pi-session-switch'), action.split('_')[1]], start_new_session=True, env={k: v for k, v in os.environ.items() if k != 'LD_PRELOAD'})
+        elif action == 'restart_steam': subprocess.Popen([os.path.expanduser('~/.local/bin/steamed-pi-restart-steam')], start_new_session=True, env={k: v for k, v in os.environ.items() if k != 'LD_PRELOAD'})
+        elif action == 'reboot': subprocess.run(['sudo', '-n', 'systemctl', 'reboot'])
+        elif action == 'poweroff': subprocess.run(['sudo', '-n', 'systemctl', 'poweroff'])
+    except Exception as e: log('action failed:', action, e)
+
+def main():
+    rc.resume_stopped()                                    # recover anything a crashed overlay left paused
+    st = fetch_status(); mode = 'attention' if ARGS.attention else 'normal'; reasons = []
+    if ARGS.attention:
+        for _ in range(6):                                  # be patient: DHCP / Wi-Fi can take a moment after login
+            st = fetch_status()
+            if st and st['ips']: break
+            time.sleep(5)
+        reasons = attention_reasons(st)
+        if not reasons: log('nothing needs attention'); cleanup(); return 0
+        log('attention:', [c for c, _ in reasons])
+    game = None
+    if ARGS.test_pid: game = (0, 0, 'test process %d' % ARGS.test_pid)
+    else:
+        try: game = rc.find_game_window()
+        except Exception as e: log('window lookup failed:', e)
+    stopped = []
+    if game and mode == 'normal':
+        pid = ARGS.test_pid or rc.window_pid(game[0]); stopped = rc.pause_game(pid); log('paused', stopped, 'for', game[2])
+    app = App(game, stopped, mode); app.reasons = reasons
+    signal.signal(signal.SIGTERM, lambda *a: GLib.idle_add(lambda: app.quit()))
+    try: app.run([])
+    finally:
+        for fd in app.fds: rc.grab(fd, False)
+        cleanup()
+    if mode == 'attention' and app.result == 'dismiss':
+        pin = read_pin(); json.dump({'seen': True, 'pin': pin}, open(ACK, 'w')); log('acknowledged')
+        try: os.remove(NOTICE)
+        except OSError: pass
+    run_action(app.result, game); return 0
+
+if __name__ == '__main__': sys.exit(main())

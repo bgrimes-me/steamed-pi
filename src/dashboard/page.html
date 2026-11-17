@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Steamed Pi</title>
+<link rel="icon" href="/brand/icon.png"><link rel="apple-touch-icon" href="/brand/icon.png">
+<style>
+:root{--bg:#12141c;--card:#1b1f2b;--line:#2a3042;--text:#e8ebf4;--mute:#97a0b8;--accent:#5b8cff;--ok:#3ecf8e;--warn:#f5b84a;--bad:#ff6b6b}
+@media (prefers-color-scheme:light){:root{--bg:#f2f4f9;--card:#fff;--line:#dde2ee;--text:#1b2030;--mute:#59627a;--accent:#2f5fe0;--ok:#138a5b;--warn:#a86a00;--bad:#c0392b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+.brand{display:flex;align-items:center;gap:16px;margin:6px 0 18px;flex-wrap:wrap}.brand img{height:72px;width:auto;max-width:100%}h1{font-size:1.5rem;margin:0 0 2px;color:var(--accent);letter-spacing:.01em}.sub{color:var(--mute);margin:0}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h2{font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin:0 0 12px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line)}.row:first-of-type{border-top:0}
+.pill{padding:2px 10px;border-radius:99px;font-size:.85rem;font-weight:600;border:1px solid currentColor}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.mute{color:var(--mute)}
+.bar{height:8px;background:var(--line);border-radius:8px;overflow:hidden;margin-top:4px}.bar>i{display:block;height:100%;background:var(--accent)}
+button,select,input{font:inherit;color-scheme:dark;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);padding:10px 14px;min-height:44px}
+button{cursor:pointer;font-weight:600}button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+button.danger{border-color:var(--bad);color:var(--bad)}button:disabled{opacity:.5;cursor:default}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.how{margin-top:10px;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:10px;font-size:.92rem}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;word-break:break-all}
+.ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);padding:10px 16px;border-radius:12px;display:none;max-width:90vw}
+.sec{display:flex;gap:6px;align-items:center;justify-content:space-between}
+</style></head><body><main>
+<div class="brand"><img src="/brand/logo.png" alt="" onerror="this.style.display='none'"><div><h1 id="host">Steamed Pi</h1><p class="sub" id="sub">connecting…</p></div></div>
+<div class="grid">
+ <section class="card"><h2>System</h2>
+  <div class="row"><span>Memory</span><span id="mem" class="mute"></span></div><div class="bar"><i id="membar" style="width:0"></i></div>
+  <div class="row"><span>Disk</span><span id="disk" class="mute"></span></div>
+  <div class="row"><span>CPU temperature</span><span id="temp"></span></div>
+  <div class="row"><span>Load (1/5/15 min)</span><span id="load" class="mute"></span></div>
+  <div class="row"><span>Uptime</span><span id="up" class="mute"></span></div>
+ </section>
+ <section class="card"><h2>Console</h2><div id="console"></div></section>
+ <section class="card"><h2>Network</h2><div id="net"></div>
+  <div class="ctl"><label class="mute" for="hostin">Console name</label></div>
+  <div class="ctl" style="flex-wrap:nowrap"><input id="hostin" maxlength="63" autocomplete="off" spellcheck="false" style="flex:1;min-width:0"><button id="hostbtn">Change</button></div>
+  <div class="ctl"><label class="mute" for="iface">Show this address in instructions</label>
+   <select id="iface"><option value="auto">Automatic (wired first)</option><option value="wired">Wired (Ethernet)</option><option value="wifi">Wi-Fi</option></select></div>
+  <div class="how">SSH, FTP and this dashboard answer on <b>every</b> connected adapter, so you can always reach them. This setting only decides which address is shown first. mDNS name: <code id="mdns"></code></div></section>
+ <section class="card"><h2>SSH access</h2>
+  <div class="sec"><span id="sshstate"></span><span><button id="sshbtn"></button></span></div>
+  <div class="ctl"><label class="mute" for="sshmin">Turn off after</label><select id="sshmin"></select></div>
+  <div class="how" id="sshhow"></div></section>
+ <section class="card"><h2>FTP access (ROMs &amp; BIOS)</h2>
+  <div class="sec"><span id="ftpstate"></span><span><button id="ftpbtn"></button></span></div>
+  <div class="ctl"><label class="mute" for="ftpmin">Turn off after</label><select id="ftpmin"></select></div>
+  <div class="how" id="ftphow"></div></section>
+ <section class="card"><h2>Controls</h2><div class="actions">
+  <button id="a_close">Close running game</button><button id="a_steam">Restart Steam</button>
+  <button id="a_home">Restart Home-button service</button><button id="a_reboot" class="danger">Reboot</button>
+  <button id="a_mode" style="grid-column:1/-1">Switch mode</button>
+  <button id="a_off" class="danger" style="grid-column:1/-1">Power off</button></div></section>
+</div><div id="toast"></div>
+<script>
+const $=id=>document.getElementById(id);let S=null,pin=sessionStorage.getItem('pin')||'';
+const opts=[[30,'30 minutes'],[120,'2 hours'],[480,'8 hours'],[0,'never (until I turn it off)']];
+for(const id of['sshmin','ftpmin'])for(const[v,t]of opts){const o=document.createElement('option');o.value=v;o.textContent=t;if(v==120)o.selected=true;$(id).appendChild(o)}
+function el(tag,txt,cls){const e=document.createElement(tag);if(txt!=null)e.textContent=txt;if(cls)e.className=cls;return e}
+function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>t.style.display='none',4000)}
+function dur(s){const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+(h?h+'h ':'')+m+'m'}
+function left(t){return t?Math.max(0,Math.round((t-S.now)/60))+' min left':'stays on'}
+function pill(on,yes,no){return el('span',on?yes:no,'pill '+(on?'ok':'mute'))}
+async function post(name,extra={}){
+  try{const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard':'1','X-Pin':pin},body:JSON.stringify({name,...extra})});
+   if(r.status==401){pin=prompt('Enter the dashboard PIN')||'';sessionStorage.setItem('pin',pin);return post(name,extra)}
+   const j=await r.json();toast(j.message||j.error||'done');load()}catch(e){toast('Request failed: '+e)}}
+function conf(msg,name){if(confirm(msg))post(name)}
+$('a_close').onclick=()=>post('close_game');$('a_steam').onclick=()=>conf('Restart Steam? Any running game will close.','restart_steam');
+$('a_home').onclick=()=>post('restart_home_service');$('a_reboot').onclick=()=>conf('Reboot the console now?','reboot');$('a_mode').onclick=()=>S&&(S.mode=='console'?conf('Switch to the desktop? Steam and any running game will close.','switch_desktop'):conf('Switch to gaming mode? Open desktop apps will close.','switch_console'));
+$('a_off').onclick=()=>conf('Power the console OFF? It will need a physical power cycle to come back.','poweroff');
+function renderConsole(c){const box=$('console');box.replaceChildren();
+ const add=(k,v)=>{const r=el('div',null,'row');r.append(el('span',k),v);box.append(r)};
+ add('Steam',pill(c.steam,'running','not running'));
+ add('Steam interface',el('span',c.webhelpers?c.webhelpers+' web processes':'—','mute'));
+ add('Controller',el('span',c.controllers.length?c.controllers[0]:'not detected',c.controllers.length?'ok':'warn'));
+ add('Home-button service',pill(S.home_service,'active','stopped'));
+ add('ES-DE (game browser)',pill(c.esde,'open','closed'));
+ add('Now playing',el('span',c.games.length?c.games.join(', '):'nothing',c.games.length?'ok':'mute'));}
+function host(){return S.ips.length?S.ips[0].ip:S.host+'.local'}
+function renderNet(){const box=$('net');box.replaceChildren();
+ if(!S.ips.length){const r=el('div',null,'row');r.append(el('span','Not connected to any network','warn'));box.append(r)}
+ S.ips.forEach((i,n)=>{const r=el('div',null,'row');r.append(el('span',(i.kind=='wired'?'Ethernet':i.kind=='wifi'?'Wi-Fi':i.if)+'  ('+i.if+')'),el('span',null));r.lastChild.append(el('code',i.ip),n==0?el('span','  shown first','mute'):'');box.append(r)});
+ $('iface').value=S.prefer;$('mdns').textContent=S.host+'.local';;if(!$('hostin').value&&document.activeElement!==$('hostin'))$('hostin').value=S.host
+ const dash=el('div',null,'row');dash.append(el('span','Dashboard address'),el('code','http://'+host()+':8080'));box.append(dash)}
+function addrs(){const out=[];for(const i of S.ips)out.push(el('code',i.ip));return out}
+function renderSSH(){const s=S.ssh,b=$('sshbtn');$('sshstate').replaceChildren(pill(s.on,'ON','OFF'),el('span',s.on&&s.off_at?'  '+left(s.off_at):(s.on?'  stays on':''),'mute'));
+ b.disabled=!s.installed;b.textContent=s.on?'Turn off':'Turn on';b.className=s.on?'danger':'primary';
+ b.onclick=()=>post(s.on?'ssh_off':'ssh_on',{minutes:+$('sshmin').value});
+ const h=$('sshhow');h.replaceChildren();
+ if(!s.installed){h.append('The SSH server is not installed yet \u2014 run the setup script (see README).');return}
+ h.append('Host ',el('code',host()),'  Port ',el('code','22'),'  User ',el('code',S.user||'user'),document.createElement('br'),
+  'From a computer on this network, open a terminal (Windows: PowerShell) and run:',document.createElement('br'),el('code','ssh '+(S.user||'user')+'@'+host()),document.createElement('br'),
+  'Password: the console\u2019s Linux account password. ',el('span','Also reachable as '+S.host+'.local. If a connection hangs, use the wired address (listed first).','mute'))}
+function renderFTP(){const f=S.ftp,b=$('ftpbtn');$('ftpstate').replaceChildren(pill(f.on,'ON','OFF'),el('span',f.on&&f.off_at?'  '+left(f.off_at):(f.on?'  stays on':''),'mute'));
+ b.disabled=!f.installed;b.textContent=f.on?'Turn off':'Turn on';b.className=f.on?'danger':'primary';
+ b.onclick=()=>post(f.on?'ftp_off':'ftp_on',{minutes:+$('ftpmin').value});
+ const h=$('ftphow');h.replaceChildren();
+ if(!f.installed){h.append('The FTP server is not installed yet \u2014 run the setup script (see README).');return}
+ if(!f.on){h.append('Turn it on to get a one-time login (port ',el('code',String(f.port)),'). It shares only the ROMs folder.');return}
+ h.append('Use any FTP program (FileZilla, WinSCP, Finder \u2192 Connect to Server):',document.createElement('br'),
+  'Host ',el('code',host()),'  Port ',el('code',String(f.port)),document.createElement('br'),
+  'User ',el('code',f.user),'  Password ',el('code',f.password),document.createElement('br'),
+  'Or one link: ',el('code','ftp://'+f.user+':'+f.password+'@'+host()+':'+f.port+'/'),document.createElement('br'),
+  el('span','Put games in the folder named for each system (nes, snes, n64, psx, gba\u2026). BIOS files go in bios/. The password changes every time FTP is turned on.','mute'))}
+function render(){const m=S.mem;$('host').textContent=S.host;$('sub').textContent=S.ips.map(i=>i.ip+' ('+i.if+')').join('  ·  ')+(S.sudo_ok?'':'  ·  ⚠ admin actions not set up yet');
+ $('mem').textContent=m.used+' / '+m.total+' MB'+(m.swap_used?'  (swap '+m.swap_used+' MB)':'');$('membar').style.width=Math.round(100*m.used/m.total)+'%';
+ $('disk').textContent=S.disk.used+' / '+S.disk.total+' GB';const t=$('temp');t.textContent=S.temp==null?'—':S.temp+' °C';t.className=S.temp>80?'bad':S.temp>70?'warn':'mute';
+ $('load').textContent=S.load.join('  ');$('up').textContent=dur(S.uptime);$('a_mode').textContent=S.mode=='console'?'Switch to Desktop':'Switch to Gaming Mode';renderConsole(S.console);renderNet();renderSSH();renderFTP();
+ for(const id of['a_reboot','a_off'])$(id).disabled=!S.sudo_ok}
+async function load(){try{const r=await fetch('/api/status',{cache:'no-store'});S=await r.json();render()}catch(e){$('sub').textContent='Console unreachable (rebooting?)'}}
+$('iface').onchange=()=>post('set_iface',{value:$('iface').value});
+$('hostbtn').onclick=()=>{const v=$('hostin').value.trim();if(v&&v!==S.host&&confirm('Rename this console to "'+v+'"? Its address becomes '+v+'.local and other computers will need the new name.'))post('set_hostname',{value:v})};
+load();setInterval(load,4000);
+</script></main></body></html>

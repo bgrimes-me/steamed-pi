@@ -1,0 +1,5 @@
+#!/bin/bash
+# Dolphin launcher for ES-DE: real GL version, and X11 (so the Home/close tools can see its window).
+unset MESA_GL_VERSION_OVERRIDE MESA_GLSL_VERSION_OVERRIDE
+export QT_QPA_PLATFORM=xcb
+exec /usr/games/dolphin-emu "$@"

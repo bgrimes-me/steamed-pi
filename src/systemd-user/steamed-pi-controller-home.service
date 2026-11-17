@@ -1,0 +1,8 @@
+[Unit]
+Description=Run a command when the gamepad Home button is pressed
+[Service]
+ExecStart=/usr/bin/python3 -I %h/.local/bin/steamed-pi-controller-home.py
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=default.target

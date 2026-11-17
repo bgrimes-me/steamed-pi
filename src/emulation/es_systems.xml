@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- Custom ES-DE system overrides. n64: adds the Mupen64Plus-Next RetroArch core, which ES-DE's bundled list omits. -->
+<systemList>
+  <system>
+    <name>n64</name>
+    <fullname>Nintendo 64</fullname>
+    <path>%ROMPATH%/n64</path>
+    <extension>.bin .BIN .d64 .D64 .n64 .N64 .ndd .NDD .u1 .U1 .v64 .V64 .z64 .Z64 .7z .7Z .zip .ZIP</extension>
+    <command label="Mupen64Plus-Next (RetroArch)">env RA_GL33=1 %EMULATOR_RETROARCH% -L %CORE_RETROARCH%/mupen64plus_next_libretro.so %ROM%</command>
+    <command label="ParaLLEl N64 (RetroArch)">%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/parallel_n64_libretro.so %ROM%</command>
+    <platform>n64</platform>
+    <theme>n64</theme>
+  </system>
+</systemList>

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Launcher for Valve's native ARM64 Linux Steam client (steamrtarm64).
+# Starts the client in Steam Frame mode (-deckard -steamos3), which selects the ARM64 backend.
+# Exit code 42 means the client applied a self-update and wants to be restarted.
+STEAMDIR="$HOME/.local/share/Steam/steamrtarm64"
+cd "$STEAMDIR" || { echo "Native Steam not found in $STEAMDIR" >&2; exit 1; }
+tries=0
+while :; do
+  ./steam -deckard -steamos3 -noverifyfiles -norepairfiles "$@"
+  rc=$?
+  [ "$rc" = 42 ] && [ "$tries" -lt 3 ] || exit "$rc"
+  tries=$((tries + 1))
+done

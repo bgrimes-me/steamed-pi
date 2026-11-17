@@ -1,0 +1,15 @@
+#!/usr/bin/python3 -I
+"""steamed-pi-setting list | get KEY | set KEY VALUE | options KEY      (the same settings as the console menu's Settings page)"""
+import sys, os
+sys.path.insert(0, os.path.expanduser('~/.local/lib/steamed-pi'))
+import steamed_pi_settings as S
+a = sys.argv[1:]
+if not a or a[0] == 'list':
+    for s in S.SETTINGS: v = s.get(); print('%-14s %-26s %s' % (s.key, s.label, s.shown(v)))
+elif a[0] == 'get' and len(a) == 2 and a[1] in S.BY_KEY: print(S.BY_KEY[a[1]].get())
+elif a[0] == 'options' and len(a) == 2 and a[1] in S.BY_KEY: print(' '.join(v for v, _ in S.BY_KEY[a[1]].options))
+elif a[0] == 'set' and len(a) >= 2 and a[1] in S.BY_KEY:
+    s = S.BY_KEY[a[1]]; v = a[2] if len(a) > 2 else None
+    if s.options and not getattr(s, 'free', False) and v not in [x for x, _ in s.options]: sys.exit('value must be one of: ' + ' '.join(x for x, _ in s.options))
+    ok, msg = s.set(v); print(msg); sys.exit(0 if ok else 1)
+else: sys.exit(__doc__)

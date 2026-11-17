@@ -1,0 +1,11 @@
+[Unit]
+Description=Start the desktop-only background services while the GNOME session runs
+PartOf=graphical-session.target
+After=graphical-session.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/sudo -n /usr/bin/systemctl start --no-block steamed-pi-desktop.target
+ExecStop=/usr/bin/sudo -n /usr/bin/systemctl stop steamed-pi-desktop.target
+[Install]
+WantedBy=graphical-session.target

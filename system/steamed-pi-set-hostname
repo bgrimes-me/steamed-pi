@@ -1,0 +1,23 @@
+#!/bin/bash
+# Set this machine's network name safely. Installed root-owned in /usr/local/sbin; the ONLY hostname command the sudo rule allows.
+#   steamed-pi-set-hostname NAME          set the hostname (root)
+#   steamed-pi-set-hostname --check NAME  just validate and print the normalized name (any user; used by the tests, dashboard and Settings)
+# A name is 1-63 letters, digits and hyphens, not starting or ending with a hyphen. Capitals are lowered.
+set -eu
+valid() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; }
+if [ "${1:-}" = --check ]; then
+  [ $# -eq 2 ] || { echo "usage: $0 --check NAME"; exit 2; }
+  n=$(printf '%s' "$2" | tr 'A-Z' 'a-z'); valid "$n" || { echo "invalid name: use 1-63 letters, digits and hyphens, not starting or ending with a hyphen"; exit 2; }
+  echo "$n"; exit 0
+fi
+[ "$(id -u)" = 0 ] || { echo "must run as root"; exit 1; }
+[ $# -eq 1 ] || { echo "usage: $0 NAME"; exit 2; }
+n=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+valid "$n" || { echo "invalid name: use 1-63 letters, digits and hyphens, not starting or ending with a hyphen"; exit 2; }
+hostnamectl set-hostname "$n"
+# keep the 127.0.1.1 line of /etc/hosts in step, so sudo and other tools can still resolve the machine's own name
+if grep -qE '^127\.0\.1\.1[[:space:]]' /etc/hosts; then sed -i -E "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1 $n/" /etc/hosts; else echo "127.0.1.1 $n" >> /etc/hosts; fi
+# cloud-init (present on Ubuntu images for the Pi) must not put the old name back at the next boot
+if [ -d /etc/cloud/cloud.cfg.d ]; then echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-steamed-pi-hostname.cfg; fi
+systemctl restart avahi-daemon 2>/dev/null || true       # the NAME.local address follows the hostname
+echo "$n"

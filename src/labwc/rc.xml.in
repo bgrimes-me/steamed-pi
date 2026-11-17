@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!-- Minimal console-mode compositor config (labwc). Edit freely; see `man labwc-config`. -->
+<labwc_config>
+  <core><gap>0</gap></core>
+  <focus><followMouse>no</followMouse><raiseOnFocus>yes</raiseOnFocus></focus>
+  <windowRules>
+    <!-- kiosk: no title bars or borders on anything -->
+    <windowRule identifier="*" serverDecoration="no" />
+  </windowRules>
+  <keyboard>
+    <default />
+    <!-- Super+Esc opens the console menu from a keyboard; Ctrl+Alt+Backspace leaves console mode (back to the login screen) -->
+    <keybind key="W-Escape"><action name="Execute"><command>@HOME@/.local/bin/steamed-pi-overlay</command></action></keybind>
+    <keybind key="C-A-BackSpace"><action name="Exit"/></keybind>
+  </keyboard>
+</labwc_config>

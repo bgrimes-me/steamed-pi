@@ -1,0 +1,28 @@
+#!/bin/bash
+# NetworkManager dispatcher hook: make replies leave through the adapter the request came in on.
+# Without this, when wired + Wi-Fi are both on the same network, connections to the Wi-Fi address often hang
+# (the reply goes out the wired port with the Wi-Fi source address and the router drops it).
+# Installed to /etc/NetworkManager/dispatcher.d/ by setup-root-3.sh.   Test without root:  STEAMED_PI_DRYRUN=1
+IFACE="$1"; ACTION="$2"
+run() { if [ -n "${STEAMED_PI_DRYRUN:-}" ]; then echo "+ $*"; else "$@"; fi; }
+case "$IFACE" in eth*|en*|wl*) ;; *) exit 0;; esac
+TABLE=$((1000 + $(cat /sys/class/net/"$IFACE"/ifindex 2>/dev/null || echo 0)))
+[ "$TABLE" -gt 1000 ] || exit 0
+flush() {
+  if [ -n "${STEAMED_PI_DRYRUN:-}" ]; then echo "+ ip rule del priority $TABLE (repeat)"; else while ip rule del priority "$TABLE" 2>/dev/null; do :; done; fi
+  run ip route flush table "$TABLE" 2>/dev/null
+}
+case "$ACTION" in
+  up|dhcp4-change|reapply)
+    [ -n "${IP4_ADDRESS_0:-}" ] || exit 0
+    IP=${IP4_ADDRESS_0%%/*}; REST=${IP4_ADDRESS_0#*/}; PREFIX=${REST%% *}
+    GW=${IP4_GATEWAY:-}; [ -n "$GW" ] || GW=$(echo "$IP4_ADDRESS_0" | awk '{print $2}')
+    NET=$(python3 -I -c "import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)" "$IP/$PREFIX") || exit 0
+    flush
+    run ip route add "$NET" dev "$IFACE" src "$IP" table "$TABLE"
+    [ -n "$GW" ] && [ "$GW" != "0.0.0.0" ] && run ip route add default via "$GW" dev "$IFACE" table "$TABLE"
+    run ip rule add from "$IP/32" lookup "$TABLE" priority "$TABLE"
+    ;;
+  down|pre-down) flush ;;
+esac
+exit 0

@@ -1,0 +1,169 @@
+#!/usr/bin/python3 -I
+"""Finish Steamed Pi setup once you have signed in to Steam (the one step that cannot be done before you have an account).
+
+    steamed-pi-postlogin [--auto] [--dry-run] [--steam-dir DIR] [--no-restart]
+
+What it does (each part is skipped if it is already done, so it is safe to run again):
+  1. waits until a Steam account is signed in (with --auto), then lets Steam settle
+  2. makes Proton Experimental (ARM64) the default for every Windows game (Steam's "Steam Play for all titles")
+  3. adds an "Emulation" (ES-DE) entry to your Steam library if ES-DE is installed
+  4. asks Steam to install the ARM64 compatibility tools (Proton Experimental ARM64, Steam Linux Runtime 4.0 Arm64, FEX)
+  5. writes Proton's defaults for the Pi's GPU (WineD3D, OpenGL for FNA games) so most games need no launch options
+  6. copies Valve's Steam icon for the desktop menu
+Steam is restarted once (steps 2 and 3 need Steam closed). Log: ~/.cache/steamed-pi/postlogin.log"""
+import os, sys, re, time, glob, shutil, struct, zlib, subprocess, argparse
+sys.path.insert(0, os.path.expanduser('~/.local/lib/steamed-pi'))
+import steamed_pi_vdf as V
+
+ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+ap.add_argument('--auto', action='store_true', help='wait for a Steam sign-in first (used at startup)')
+ap.add_argument('--dry-run', action='store_true'); ap.add_argument('--no-restart', action='store_true', help='edit files only; do not stop/start Steam')
+ap.add_argument('--steam-dir', default=os.environ.get('STEAM_DIR', os.path.expanduser('~/.local/share/Steam')))
+ARGS = ap.parse_args()
+HOME = os.path.expanduser('~'); S = ARGS.steam_dir
+CACHE = HOME + '/.cache/steamed-pi'; os.makedirs(CACHE, exist_ok=True); LOG = CACHE + '/postlogin.log'
+MARK = HOME + '/.local/state/steamed-pi'; os.makedirs(MARK, exist_ok=True)
+FLAG = CACHE + '/restarting'
+TOOLS = {'4427310': 'Proton Experimental (ARM64)', '4185400': 'SteamLinuxRuntime_4-arm64', '3127680': 'FEX-Emu', '4628740': 'Proton 11.0 (ARM64)'}
+PROTON_DIRS = ['Proton Experimental (ARM64)', 'Proton 11.0 (ARM64)']
+PROTON_SETTINGS = '# Written by steamed-pi-postlogin: defaults that suit the Raspberry Pi 5 GPU. Delete this file to use Proton\'s own defaults.\n' \
+                  'user_settings = {"PROTON_USE_WINED3D": "1", "FNA3D_FORCE_DRIVER": "OpenGL"}\n'
+
+def log(*a):
+    line = time.strftime('%H:%M:%S ') + ' '.join(str(x) for x in a); print(line, flush=True)
+    try: open(LOG, 'a').write(line + '\n')
+    except OSError: pass
+def run_steam(*args):
+    # talk to Steam through our wrapper; never let a missing or failing Steam stop the rest of the setup
+    try: return subprocess.run([HOME + '/.local/bin/steam'] + list(args), capture_output=True, timeout=120).returncode
+    except (OSError, subprocess.SubprocessError) as e: log('could not run steam %s: %s' % (' '.join(args), e)); return None
+def pgrep(name): return subprocess.run(['pgrep', '-x', name], capture_output=True).returncode == 0
+def read(p):
+    return open(p, encoding='utf-8', errors='surrogateescape').read()
+def write(p, s):
+    if ARGS.dry_run: log('(dry) would write', p); return
+    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+def backup(p):
+    if os.path.exists(p) and not ARGS.dry_run: shutil.copy2(p, p + '.bak-' + time.strftime('%Y%m%d-%H%M%S'))
+
+def signed_in():
+    try: return bool(re.search(r'"AccountName"\s+"[^"]+"', read(S + '/config/loginusers.vdf')))
+    except OSError: return False
+def userdata():
+    d = sorted(glob.glob(S + '/userdata/[0-9]*/config'))
+    return d[0] if d else None
+
+# ---- the parts that need Steam closed
+def stop_steam():
+    if ARGS.no_restart or ARGS.dry_run: return
+    open(FLAG, 'w').close()                                     # tells the supervisor this is deliberate, not a crash
+    run_steam('-shutdown')
+    for _ in range(40):
+        if not pgrep('steam'): break
+        time.sleep(2); open(FLAG, 'w').close()
+    subprocess.run(['pkill', '-x', 'steamwebhelper']); time.sleep(2)
+def start_steam():
+    if ARGS.no_restart or ARGS.dry_run: return
+    args = [HOME + '/.local/bin/steam'] + (['-gamepadui'] if pgrep('labwc') else [])
+    try: subprocess.Popen(args, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e: log('could not start Steam:', e); return
+    time.sleep(5)
+    try: os.remove(FLAG)
+    except OSError: pass
+
+def set_default_compat_tool():
+    p = S + '/config/config.vdf'
+    if not os.path.exists(p): log('config.vdf not found; skipping default Proton'); return False
+    c = V.parse(read(p)); root = V.path(c, 'InstallConfigStore', 'Software', 'Valve', 'Steam')
+    if root is None: log('unexpected config.vdf layout; skipping default Proton'); return False
+    m = V.ensure(root, 'CompatToolMapping'); cur = V.get(m, '0')
+    if cur is not None and any(k == 'name' and v for k, v in cur): log('a default compatibility tool is already set; leaving it'); return False
+    backup(p); entry = [['name', 'proton-experimental-arm64'], ['config', ''], ['priority', '75']]
+    if cur is None: m.append(['0', entry])
+    else: cur[:] = entry
+    write(p, V.ser(c)); log('default compatibility tool set: Proton Experimental (ARM64) for all Windows games'); return True
+
+def add_emulation_shortcut():
+    exe = HOME + '/.local/bin/es-de-launch'; name = 'Emulation'
+    if not (os.path.exists(exe) and os.path.isdir(HOME + '/Applications/ES-DE')): log('ES-DE not installed; no shortcut needed'); return False
+    ud = userdata()
+    if not ud: log('no Steam user folder yet; shortcut skipped'); return False
+    p = ud + '/shortcuts.vdf'; appid = zlib.crc32(('"%s"%s' % (exe, name)).encode()) | 0x80000000
+    def entry(idx):
+        s = b'\x00' + str(idx).encode() + b'\x00' + b'\x02appid\x00' + struct.pack('<I', appid)
+        for k, v in (('AppName', name), ('Exe', '"%s"' % exe), ('StartDir', '"%s/"' % os.path.dirname(exe)), ('icon', ''), ('ShortcutPath', ''), ('LaunchOptions', '')):
+            s += b'\x01' + k.encode() + b'\x00' + v.encode() + b'\x00'
+        for k, v in (('IsHidden', 0), ('AllowDesktopConfig', 1), ('AllowOverlay', 1), ('OpenVR', 0), ('Devkit', 0)):
+            s += b'\x02' + k.encode() + b'\x00' + struct.pack('<I', v)
+        s += b'\x01DevkitGameID\x00\x00' + b'\x02DevkitOverrideAppID\x00' + struct.pack('<I', 0) + b'\x02LastPlayTime\x00' + struct.pack('<I', 0)
+        s += b'\x01FlatpakAppID\x00\x00' + b'\x00tags\x00\x08' + b'\x08'
+        return s
+    if os.path.exists(p):
+        data = open(p, 'rb').read()
+        if not (data.startswith(b'\x00shortcuts\x00') and data.endswith(b'\x08\x08')): log('unexpected shortcuts.vdf layout; shortcut skipped'); return False
+        if name.encode() in data and exe.encode() in data: log('the Emulation shortcut is already there'); return False
+        body = data[len(b'\x00shortcuts\x00'):-2]; n = body.count(b'\x00tags\x00')
+    else: body = b''; n = 0
+    backup(p)
+    if ARGS.dry_run: log('(dry) would add the Emulation shortcut'); return True
+    open(p, 'wb').write(b'\x00shortcuts\x00' + body + entry(n) + b'\x08\x08'); log('added the "Emulation" (ES-DE) entry to your Steam library'); return True
+
+# ---- the parts that need Steam running
+def install_tools():
+    todo = [a for a in TOOLS if not (os.path.exists('%s/steamapps/appmanifest_%s.acf' % (S, a)) or os.path.isdir('%s/steamapps/common/%s' % (S, TOOLS[a])))][:3]       # the three that matter; Proton 11 is optional
+    todo = [a for a in todo if a != '4628740']
+    if not todo: log('compatibility tools already installed'); return
+    for a in todo:
+        log('asking Steam to install', TOOLS[a], '(app %s)' % a)
+        if not ARGS.dry_run: run_steam('steam://install/' + a)
+        time.sleep(3)
+def tools_ready():
+    return all(os.path.exists('%s/steamapps/common/%s' % (S, TOOLS[a])) for a in ('4427310', '4185400'))
+def write_proton_defaults():
+    n = 0
+    for d in PROTON_DIRS:
+        f = '%s/steamapps/common/%s/user_settings.py' % (S, d)
+        if os.path.isdir(os.path.dirname(f)) and not os.path.exists(f): write(f, PROTON_SETTINGS); n += 1; log('Proton defaults written for', d)
+    return n
+def copy_icon():
+    src = S + '/public/steam_tray_posix.png'; dst = HOME + '/.local/share/icons/hicolor/128x128/apps/steam-native.png'
+    if os.path.exists(src) and not os.path.exists(dst) and not ARGS.dry_run:
+        os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); log('Steam icon installed for the desktop menu')
+
+def main():
+    done = MARK + '/postlogin-done'
+    if ARGS.auto and os.path.exists(done):                       # cheap upkeep on every start: Proton updates can remove our defaults file
+        write_proton_defaults(); copy_icon(); return 0
+    if not signed_in():
+        if not ARGS.auto: log('Not signed in to Steam yet. Sign in, then run this again.'); return 1
+        log('waiting for a Steam sign-in...')
+        for _ in range(2880):                                     # up to 24 hours, checking every 30 s
+            if signed_in(): break
+            time.sleep(30)
+        else: log('gave up waiting for a sign-in'); return 1
+        log('signed in; letting Steam settle'); time.sleep(90)
+    ud = userdata()
+    if not ud: log('Steam has no user folder yet; try again in a minute.'); return 1
+    if ARGS.dry_run or not (os.path.exists(MARK + '/config-done')):
+        stop_steam()
+        changed = set_default_compat_tool() | add_emulation_shortcut()
+        if not ARGS.dry_run: open(MARK + '/config-done', 'w').close()
+        start_steam()
+        if changed and not ARGS.no_restart and not ARGS.dry_run:
+            for _ in range(90):
+                if pgrep('steamwebhelper'): break
+                time.sleep(2)
+            time.sleep(45)
+    install_tools()
+    if not ARGS.dry_run and not ARGS.no_restart:
+        for _ in range(360):                                      # tools are a few hundred MB: allow up to an hour
+            if tools_ready(): break
+            time.sleep(10)
+    write_proton_defaults(); copy_icon()
+    if tools_ready() or ARGS.dry_run:
+        if not ARGS.dry_run: open(done, 'w').close()
+        log('setup finished: Windows games now use Proton Experimental (ARM64) with Pi-friendly defaults')
+    else: log('the tools are still downloading; this will finish itself at the next start')
+    return 0
+
+if __name__ == '__main__': sys.exit(main())

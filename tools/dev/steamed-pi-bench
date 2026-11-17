@@ -1,0 +1,116 @@
+#!/usr/bin/python3 -I
+"""Steam memory experiment for Console Mode. Start it from the DESKTOP:   steamed-pi-bench start
+It switches to console mode, measures Steam (baseline, then with a memory cap, then with GPU-accelerated web views off),
+writes a report, switches back to the desktop and shows a desktop notification when it is finished.
+Everything it changes is temporary (Steam is relaunched by hand with extra flags; nothing is saved)."""
+import os, sys, time, subprocess, statistics, glob, json
+HOME = os.path.expanduser('~'); OUT = HOME + '/steamed-pi-bench/' + time.strftime('%Y%m%d-%H%M%S'); UID = os.getuid()
+SWITCH = HOME + '/.local/bin/steamed-pi-session-switch'; STEAM = HOME + '/.local/bin/steam'
+FLAG = HOME + '/.cache/steamed-pi/restarting'
+SETTLE = float(os.environ.get('BENCH_SETTLE', '100')); SAMPLES = int(os.environ.get('BENCH_SAMPLES', '6')); GAP = float(os.environ.get('BENCH_GAP', '10'))
+CAP = os.environ.get('BENCH_CAP', '1G')
+LOG = None
+def log(*a):
+    s = time.strftime('%H:%M:%S ') + ' '.join(str(x) for x in a); print(s, flush=True)
+    if LOG: LOG.write(s + '\n'); LOG.flush()
+def sh(cmd, **k): return subprocess.run(cmd, capture_output=True, text=True, **k)
+def pids(name): return [int(p) for p in sh(['pgrep', '-u', str(UID), '-x', name]).stdout.split()]
+def ppid(p):
+    try: return int(open('/proc/%d/stat' % p).read().rsplit(')', 1)[1].split()[1])
+    except Exception: return 0
+def pss_mb(p):
+    try:
+        for l in open('/proc/%d/smaps_rollup' % p):
+            if l.startswith('Pss:'): return int(l.split()[1]) / 1024.0
+    except Exception: pass
+    return 0.0
+def steam_tree():
+    roots = set(pids('steam')); allp = [int(x) for x in os.listdir('/proc') if x.isdigit()]
+    parent = {p: ppid(p) for p in allp}; tree = set(roots)
+    for _ in range(8):
+        tree |= {p for p, q in parent.items() if q in tree}
+    return sorted(tree)
+def cpu_idle():
+    out = sh(['top', '-bn2', '-d2']).stdout.splitlines(); l = [x for x in out if x.startswith('%Cpu')][-1]
+    return float(l.split('ni,')[1].split('id')[0])
+def meminfo():
+    d = {}
+    for l in open('/proc/meminfo'): k, v = l.split(':'); d[k] = int(v.split()[0]) / 1024.0
+    return d
+def measure(label):
+    rows = []
+    for i in range(SAMPLES):
+        t = steam_tree(); tot = sum(pss_mb(p) for p in t); webs = pids('steamwebhelper')
+        m = meminfo(); rows.append(dict(steam_pss=tot, procs=len(t), helpers=len(webs), avail=m['MemAvailable'], swap=m['SwapTotal'] - m['SwapFree'], idle=cpu_idle()))
+        time.sleep(GAP)
+    med = lambda k: statistics.median(r[k] for r in rows)
+    arch = ''
+    try: arch = os.readlink('/proc/%d/exe' % pids('steamwebhelper')[0])
+    except Exception: pass
+    res = dict(label=label, steam_mb=round(med('steam_pss')), processes=int(med('procs')), helpers=int(med('helpers')), available_mb=round(med('avail')),
+               swap_used_mb=round(med('swap')), cpu_idle_pct=round(med('idle'), 1), helper_exe=arch)
+    log('RESULT', json.dumps(res)); return res
+def console_env():
+    for p in pids('labwc'):
+        try:
+            e = dict(x.split('=', 1) for x in open('/proc/%d/environ' % p).read().split('\0') if '=' in x)
+            return {k: e[k] for k in ('WAYLAND_DISPLAY', 'DISPLAY', 'XDG_RUNTIME_DIR', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE') if k in e}
+        except Exception: pass
+    return {}
+def hold_flag(sec):
+    end = time.time() + sec
+    while time.time() < end: open(FLAG, 'w').close(); time.sleep(10)
+def stop_steam():
+    open(FLAG, 'w').close(); sh([STEAM, '-shutdown'], env=dict(os.environ, **console_env()))
+    for _ in range(40):
+        if not pids('steam') and not pids('steamwebhelper'): break
+        time.sleep(2); open(FLAG, 'w').close()
+    for p in pids('steam') + pids('steamwebhelper'): sh(['kill', str(p)])
+    time.sleep(3); sh(['systemctl', '--user', 'stop', 'steamed-pi-bench-steam.scope']); sh(['systemctl', '--user', 'reset-failed', 'steamed-pi-bench-steam.scope'])
+def start_steam(extra=(), cap=None):
+    cmd = [STEAM, '-gamepadui'] + list(extra)
+    if cap: cmd = ['systemd-run', '--user', '--scope', '--unit=steamed-pi-bench-steam', '-q', '-p', 'MemoryHigh=' + cap, '-p', 'MemorySwapMax=infinity'] + cmd
+    log('launching:', ' '.join(cmd)); open(FLAG, 'w').close()
+    subprocess.Popen(cmd, env=dict(os.environ, **console_env()), start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def wait_up(limit=240):
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        if len(pids('steamwebhelper')) >= 4: break
+        time.sleep(3)
+    hold_flag(SETTLE); os.path.exists(FLAG) and os.remove(FLAG)
+def notify(text):
+    env = dict(os.environ, XDG_RUNTIME_DIR='/run/user/%d' % UID, DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/%d/bus' % UID)
+    for _ in range(60):
+        if pids('gnome-shell'): break
+        time.sleep(2)
+    time.sleep(8); sh(['notify-send', '-u', 'critical', 'Steamed Pi test finished', text], env=env)
+def run():
+    global LOG
+    os.makedirs(OUT, exist_ok=True); LOG = open(OUT + '/log.txt', 'a'); log('bench start; results in', OUT)
+    if not pids('gnome-shell'): log('start this from the desktop session'); return 2
+    log('switching to console mode'); sh([SWITCH, 'console'])
+    for _ in range(60):
+        if pids('labwc') and pids('steam'): break
+        time.sleep(3)
+    wait_up(); results = []
+    try:
+        results.append(measure('A  baseline (as it runs today)'))
+        stop_steam(); start_steam(cap=CAP); wait_up(); results.append(measure('B  Steam capped at MemoryHigh=' + CAP))
+        stop_steam(); start_steam(extra=['-cef-disable-gpu']); wait_up(); results.append(measure('C  GPU-accelerated web views off (-cef-disable-gpu)'))
+    except Exception as e: log('ERROR', repr(e))
+    finally:
+        stop_steam()
+        lines = ['Steam memory test (Console Mode, idle at the Big Picture home screen). Medians of %d samples.' % SAMPLES, '']
+        for r in results:
+            lines += [r['label'], '   Steam total (PSS): %d MB in %d processes (%d web helpers)' % (r['steam_mb'], r['processes'], r['helpers']),
+                      '   system available: %d MB   swap used: %d MB   CPU idle: %s%%   helper binary: %s' % (r['available_mb'], r['swap_used_mb'], r['cpu_idle_pct'], r['helper_exe']), '']
+        open(OUT + '/report.txt', 'w').write('\n'.join(lines)); log('\n' + '\n'.join(lines))
+        log('switching back to desktop'); sh([SWITCH, 'desktop']); notify('Report: ' + OUT + '/report.txt')
+    return 0
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == 'start':
+        r = subprocess.run(['systemd-run', '--user', '--unit=steamed-pi-bench', '--collect', '-q', os.path.abspath(__file__), 'run'])
+        print('started: the screen will go to Console Mode and come back to the desktop by itself in about 12 minutes (a notification appears when done).'); sys.exit(r.returncode)
+    if len(sys.argv) > 1 and sys.argv[1] == 'measure':      # just measure whatever Steam is doing now
+        OUTD = None; print(json.dumps(measure('now'), indent=1)); sys.exit(0)
+    sys.exit(run())

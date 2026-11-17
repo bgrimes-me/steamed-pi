@@ -1,0 +1,10 @@
+# Steamed Pi: the only commands the console may run as root, without a password. Nothing else.
+#   - SSH on/off from the dashboard and Settings page
+#   - reboot / power off from the console menu
+#   - start/stop the desktop-only background services when switching mode
+#   - restart the login manager, which is how "Switch to Desktop / Gaming Mode" works
+#   - change the console's network name (a root-owned helper that validates the name)
+@USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl start ssh.socket, /usr/bin/systemctl stop ssh.socket, /usr/bin/systemctl start ssh.service, /usr/bin/systemctl stop ssh.service, /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff
+@USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl start steamed-pi-desktop.target, /usr/bin/systemctl start --no-block steamed-pi-desktop.target, /usr/bin/systemctl stop steamed-pi-desktop.target
+@USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block restart gdm
+@USER@ ALL=(root) NOPASSWD: /usr/local/sbin/steamed-pi-set-hostname *

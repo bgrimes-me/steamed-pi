@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Return to Gaming Mode
+Comment=Switch back to the game console (Steam Big Picture)
+Exec=@HOME@/.local/bin/steamed-pi-session-switch console
+Icon=steamed-pi-gaming-mode
+Terminal=false
+Categories=Game;
